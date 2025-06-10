@@ -1,0 +1,31 @@
+[
+    {
+        "id": "0",
+        "image": "image0.jpg",
+        "conversations": [
+            {
+              "role": "user", 
+              "content": "<image>\nWhat style of food is this?\nAnswer the question using a single word or phrase."
+            }, 
+            {
+                "role": "assistant", 
+                "content": "Sandwich."
+            },   
+            {
+                "role": "user", 
+                "content": "What kind of meat is pictured?"
+            },
+            {
+                "role": "assistant", 
+                "content": "Ham."
+            }, 
+            {
+                "role": "user", 
+                "content": "Why was the food only partially eaten?"},
+            {
+                "role": "assistant", 
+                "content": "Someone was too full to finish it"
+            }
+        ]
+    }
+  ]
