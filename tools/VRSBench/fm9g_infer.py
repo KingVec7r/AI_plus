@@ -78,10 +78,13 @@ class VRSBench(Dataset):
         item = self.data[idx]
         image_id = item.get('image_id')
         image_path = os.path.join(self.img_base_dir, image_id)
+
         return {
+            'question_id': item.get('question_id'), 
+            'image_id': image_id,
             'image_path': image_path,
-            'ground_truth': item.get('ground_truth'),
-            'image_id': item.get('image_id')
+            'question': item.get('question'),
+            'ground_truth': item.get('ground_truth')
         }
     
     def load_json_file(self, file_path):
@@ -109,138 +112,158 @@ class VRSBench(Dataset):
             print(f"发生未知错误: {e}")
             return []
         
-    
-def vrsbench_eval_ddp(local_rank, world_size, model_file_path, infer_results_path, task="cap", batch_size=4):
+class VRSBenchEval:
+    def __init__(self, model_file_path, infer_results_path, task="cap", batch_size=4):
 
-    if local_rank == 0:
-        print("Start VRSBench evaluation with DDP...")
+        parts = model_file_path.rstrip('/').split('/')
+        model_name = parts[-1] if parts else ''
 
-    # 初始化进程组
-    torch.cuda.set_device(local_rank)
-    os.environ['WORLD_SIZE'] = str(world_size)
-    os.environ['RANK'] = str(local_rank)
-    os.environ['MASTER_ADDR'] = 'localhost'
-    os.environ['MASTER_PORT'] = '12355'
-    dist.init_process_group("nccl", world_size=world_size, init_method='env://')
+        model_config = {
+            'trust_remote_code': True,
+            'attn_implementation': 'sdpa',
+            'torch_dtype': torch.bfloat16,
+        }
 
-    if local_rank == 0:
         print(f"Loading model from {model_file_path}...")
-    
-    # 模型加载
-    model_config = {
-        'trust_remote_code': True,
-        'attn_implementation': 'sdpa',
-        'torch_dtype': torch.bfloat16,
-    }
-    with suppress_output():
-        model = AutoModel.from_pretrained(model_file_path, **model_config)
-    model = model.cuda()
-    model = DDP(model, device_ids=[local_rank], output_device=local_rank)
-    model.eval()
-    
-    if local_rank == 0:
-        print("Loading tokenizer...")
+        with suppress_output():
+            self.model = AutoModel.from_pretrained(model_file_path, **model_config)
+            self.tokenizer = AutoTokenizer.from_pretrained(model_file_path, trust_remote_code=True)
 
-    tokenizer = AutoTokenizer.from_pretrained(model_file_path, trust_remote_code=True)
-    
-    if local_rank == 0:
-        print(f"Loading evaluate data...")
-    
-    # 创建分布式数据集和数据加载器
-    if local_rank == 0:
-        print(f"Building dataset...")
-    
-    dataset = VRSBench(task)
-    sampler = DistributedSampler(dataset, num_replicas=world_size, rank=local_rank, shuffle=False)
-    dataloader = DataLoader(dataset, batch_size=batch_size, sampler=sampler, num_workers=2)
+        self.results_file_path = os.path.join(infer_results_path, f"{model_name}_VRSBench_{task}_eval_result.json")
+        self.task = task
+        self.batch_size = batch_size
+        self.dataset = VRSBench(task)
 
-    image_ids = []
-    ground_truth = []
-    inference_results = []
-    prompt = f"""Describe the image in detail"""
+    def run(self):
+        infer_result = torch.multiprocessing.spawn(
+            self.vrsbench_eval_ddp,
+            # args=(),
+            nprocs=world_size,
+            # join=True
+        )
+        self.result_eval(infer_result)
 
-    if local_rank == 0:
-        print(f"Evaluating {len(dataset)} images from VRSBench for the task of {task}...")
-    
-    with timing(f"[rank{local_rank}] Total inference time"):
-        # 分批处理数据
-        for batch in tqdm(dataloader, disable=local_rank != 0):
-            
-            batch_image_path = batch['image_path']
-            batch_images = [Image.open(path).convert('RGB') for path in batch_image_path]
-            batch_gts = batch['ground_truth']
-            batch_ids = batch['image_id']
-            
-            # 过滤掉加载失败的图像
-            valid_indices = [i for i, img in enumerate(batch_images) if img is not None]
-            if not valid_indices:
-                continue
+    def vrsbench_eval_ddp(self, local_rank):
+        world_size = torch.cuda.device_count()
 
-            valid_images = [batch_images[i] for i in valid_indices]
-            valid_gts = [batch_gts[i] for i in valid_indices]
-            valid_ids = [batch_ids[i] for i in valid_indices]
+        if local_rank == 0:
+            print("Start VRSBench evaluation with DDP...")
+
+        # 初始化进程组
+        torch.cuda.set_device(local_rank)
+        os.environ['WORLD_SIZE'] = str(world_size)
+        os.environ['RANK'] = str(local_rank)
+        os.environ['MASTER_ADDR'] = 'localhost'
+        os.environ['MASTER_PORT'] = '12355'
+        dist.init_process_group("nccl", world_size=world_size, init_method='env://')
+
+        if local_rank == 0:
+            print(f"Transfering model to DDP model...")
+        
+        model = self.model.cuda()
+        model = DDP(model, device_ids=[local_rank], output_device=local_rank)
+        model.eval()
+
+        sampler = DistributedSampler(self.dataset, num_replicas=world_size, rank=local_rank, shuffle=False)
+        dataloader = DataLoader(self.dataset, batch_size=self.batch_size, sampler=sampler, num_workers=2)
+
+        image_ids = []
+        ground_truth = []
+        inference_results = []
+        questions = []
+
+        if local_rank == 0:
+            print(f"Evaluating {len(self.dataset)} images from VRSBench for the task of {self.task}...")
+        
+        with timing(f"[rank{local_rank}] Total inference time"):
+            # 分批处理数据
+            for batch in tqdm(dataloader, disable=local_rank != 0):
                 
-            # 构建批处理输入
-            batch_inputs = [[{'role': 'user', 'content': [image, prompt]}] for image in valid_images]
-            
-            # 模型推理
-            with torch.no_grad():
-                res = model.module.chat(
-                    image=None,
-                    msgs=batch_inputs,
-                    tokenizer=tokenizer,
-                    sampling=False,
-                    num_beams=1
-                )
-            
-            # 处理输出
-            inference_results.extend(res)
-            ground_truth.extend(valid_gts)
-            image_ids.extend(valid_ids)
-    
-    # 收集所有进程的结果
-    all_results = [None for _ in range(world_size)]
-    dist.all_gather_object(all_results, {
-        'image_ids': image_ids,
-        'ground_truth': ground_truth,
-        'inference_results': inference_results
-    })
-    
-    # 主进程合并结果并保存
-    if local_rank == 0:
-        merged_image_ids = []
-        merged_ground_truth = []
-        merged_inference_results = []
-        
-        for result in all_results:
-            merged_image_ids.extend(result['image_ids'])
-            merged_ground_truth.extend(result['ground_truth'])
-            merged_inference_results.extend(result['inference_results'])
-        
-        # 保存结果
-        infer_results = [
-            {
-                "image_id": img_id,
-                "ground_truth": gt,
-                "inference_result": pred
-            }
-            for img_id, gt, pred in zip(merged_image_ids, merged_ground_truth, merged_inference_results)
-        ]
-        
-        with open(infer_results_path, "w", encoding="utf-8") as f:
-            json.dump(infer_results, f, ensure_ascii=False, indent=2)  
+                batch_images = [Image.open(path).convert('RGB') for path in batch['image_path']]
+                
+                # 过滤掉加载失败的图像
+                valid_indices = [i for i, img in enumerate(batch_images) if img is not None]
+                if not valid_indices:
+                    continue
 
-        print(f"✅ 推理结果已保存至 {infer_results_path}")
+                valid_images = [batch_images[i] for i in valid_indices]
+                valid_gts = [batch['ground_truth'][i] for i in valid_indices]
+                valid_ids = [batch['image_id'][i] for i in valid_indices]
+                valid_questions = [batch['question'][i] for i in valid_indices]
+                    
+                # 构建批处理输入
+                if self.task == "cap" or self.task == "vqa":
+                    prompt = valid_questions
+
+                if self.task == "referring":
+                    prompt = [f"""This is a remote sensing image. You need to determine the object referred to by the given referring sentence. The object referred to by the referring sentence is unique in the image. You need to provide the location of the referred object in the image in the form of a bounding box. The format of the bounding box is: x1,y1,x2,y2, where x1,y1 are the coordinates of the top-left corner of the bounding box, and x2,y2 are the coordinates of the bottom-right corner of the bounding box. Please note that the coordinates of the bounding box are percentage values relative to the size of the image, ranging from 0 to 100.\nEnsure that your response includes the coordinates of the bounding box and strictly follows the following format: {{<x1><y1><x2><y2>}}.\nreferring sentence: '{q}'""" for q in valid_questions]
+
+                batch_inputs = [[{'role': 'user', 'content': [image, prompt]}] for image, prompt in zip(valid_images,prompt)]
+                
+                # 模型推理
+                with torch.no_grad():
+                    res = model.module.chat(
+                        image=None,
+                        msgs=batch_inputs,
+                        tokenizer=self.tokenizer,
+                        sampling=False,
+                        num_beams=1
+                    )
+                
+                # 处理输出
+                inference_results.extend(res)
+                ground_truth.extend(valid_gts)
+                image_ids.extend(valid_ids)
+                questions.extend(valid_questions)
         
+        # 收集所有进程的结果
+        all_results = [None for _ in range(world_size)]
+        dist.all_gather_object(all_results, {
+            'image_ids': image_ids,
+            'question': questions,
+            'ground_truth': ground_truth,
+            'inference_results': inference_results
+        })
+
+        dist.destroy_process_group()
+
+        if local_rank == 0:
+            merged_image_ids = []
+            merged_question = []
+            merged_ground_truth = []
+            merged_inference_results = []
+            
+            for result in all_results:
+                merged_image_ids.extend(result['image_ids'])
+                merged_question.extend(result['question'])
+                merged_ground_truth.extend(result['ground_truth'])
+                merged_inference_results.extend(result['inference_results'])
+
+            # 保存结果
+            infer_results = [
+                {
+                    "image_id": img_id,
+                    "question": q,
+                    "ground_truth": gt,
+                    "inference_result": pred
+                }
+                for img_id, q, gt, pred in zip(merged_image_ids, merged_question,merged_ground_truth, merged_inference_results)
+            ]
+            
+            with open(self.results_file_path, "w", encoding="utf-8") as f:
+                json.dump(infer_results, f, ensure_ascii=False, indent=2)  
+
+            print(f"✅ 推理结果已保存至 {infer_results_path}")
+            return infer_results
+        
+    def result_eval(self, infer_results):    
         # 计算评估指标
         print("Calculating BLEU score...")
         bleu = BLEU()
         bleu_score = bleu.corpus_score([r['inference_result'] for r in infer_results], [[r['ground_truth'] for r in infer_results]])
         print(f"BLEU eval result: {bleu_score}")
         print(f"BLEU score: {bleu_score.score:.2f}")
-    
-    # 清理进程组
-    dist.destroy_process_group()
+
 
 if __name__ == '__main__':
     # 模型文件路径
