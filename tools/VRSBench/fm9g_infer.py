@@ -23,8 +23,26 @@ from torch.utils.data import Dataset, DataLoader
 from torch.utils.data.distributed import DistributedSampler
 
 from torchvision import transforms
+from torchvision.ops import box_iou
 
 import sys
+import re
+
+import logging
+
+# 基本配置（一次性设置）
+logging.basicConfig(
+    level=logging.INFO,  # 日志级别：DEBUG < INFO < WARNING < ERROR < CRITICAL
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',  # 日志格式
+    filename='./tools/VRSBench/eval_result/eval.log'  # 输出到文件（可选）
+)
+# 获取logger对象
+logger = logging.getLogger(__name__)
+# logger.debug('这是调试信息')
+# logger.info('这是普通信息')
+# logger.warning('这是警告信息')
+# logger.error('这是错误信息')
+# logger.critical('这是严重错误信息')
 
 # Suppress output context manager
 @contextmanager
@@ -71,7 +89,7 @@ class VRSBench(Dataset):
         self.base_dir = base_dir
         self.img_base_dir = os.path.join(base_dir, "Images_val")
         self.data = self.load_json_file(eval_json_path)
-        # self.data = self.data[0:16]
+        # self.data = self.data[0:32]
      
     def __len__(self):
         return len(self.data)
@@ -181,12 +199,15 @@ class VRSBenchEval:
         
         with timing(f"Total inference time", enable=(local_rank == 0)):
             # 分批处理数据
-            for batch in tqdm(
+            # dist.barrier()
+            for i,batch in enumerate(tqdm(
                 dataloader, 
                 desc=f"[rank{local_rank}]", 
                 position = local_rank + 4,
                 # disable=local_rank != 0
-                ):                
+                )):  
+                if i%20==0:
+                    dist.barrier()              
                 batch_images = [Image.open(path).convert('RGB') for path in batch['image_path']]
                 
                 # 过滤掉加载失败的图像
@@ -202,13 +223,17 @@ class VRSBenchEval:
                 # 构建批处理输入
                 if self.task == "cap" or self.task == "vqa":
                     prompt = valid_questions
-
+ 
                 if self.task == "referring":
-                    prompt = [f"""This is a remote sensing image. You need to determine the object referred to by the given referring sentence. The object referred to by the referring sentence is unique in the image. You need to provide the location of the referred object in the image in the form of a bounding box. The format of the bounding box is: x1,y1,x2,y2, where x1,y1 are the coordinates of the top-left corner of the bounding box, and x2,y2 are the coordinates of the bottom-right corner of the bounding box. Please note that the coordinates of the bounding box are percentage values relative to the size of the image, ranging from 0 to 100.\nEnsure that your response includes the coordinates of the bounding box and strictly follows the following format: {{<x1><y1><x2><y2>}}.\nreferring sentence: '{q}'""" for q in valid_questions]
+                    prompt = [f"""This is a remote sensing image.The object referred to by the given referring sentence is unique in the image. You need to provide the location of the referred object in the image in the form of a bounding box. The format of the bounding box is: <box> x1 y1 x2 y2</box>, where x1,y1 are the coordinates of the top-left corner of the bounding box, and x2,y2 are the coordinates of the bottom-right corner of the bounding box. Please note that the coordinates value of the bounding box are relative to the size of the image, ranging from 0 to 1000.\nEnsure that your response includes the coordinates of the bounding box and strictly follows the given format and should not contain any redundant content.\nresponse format: <box> x1 y1 x2 y2</box>.\nreferring sentence: '{q}'""" for q in valid_questions]
 
                 batch_inputs = [[{'role': 'user', 'content': [image, prompt]}] for image, prompt in zip(valid_images,prompt)]
                 
                 # 模型推理
+                if self.task == "referring":
+                    max_new_tokens = 64
+                else:
+                    max_new_tokens = 2048
                 with suppress_output():
                     with torch.no_grad():
                         res = model.module.chat(
@@ -216,7 +241,8 @@ class VRSBenchEval:
                             msgs=batch_inputs,
                             tokenizer=self.tokenizer,
                             sampling=False,
-                            num_beams=1
+                            num_beams=1,
+                            max_new_tokens = max_new_tokens,
                         )
                 
                 # 处理输出
@@ -267,33 +293,106 @@ class VRSBenchEval:
             self.result_eval(infer_results)
         
     def result_eval(self, infer_results):    
-        # 计算评估指标
-        print("Calculating BLEU score...")
-        bleu = BLEU()
-        bleu_score = bleu.corpus_score([r['inference_result'] for r in infer_results], [[r['ground_truth'] for r in infer_results]])
-        print(f"BLEU eval result: {bleu_score}")
-        print(f"BLEU score: {bleu_score.score:.2f}")
+        if self.task == "cap":
+            # 计算BLEU分数
+            print("Calculating BLEU score...")
+            bleu = BLEU()
+            bleu_score = bleu.corpus_score([r['inference_result'] for r in infer_results], [[r['ground_truth'] for r in infer_results]])
+            print(f"BLEU eval result: {bleu_score}")
+            print(f"BLEU score: {bleu_score.score:.2f}")
+
+        elif self.task == "referring":
+            # 计算IoU分数
+            bbox_infer = [self.parse_bbox_infer(res) for res in [r['inference_result'] for r in infer_results]]
+            bbox_gt = [self.parse_bbox_gt(gt) for gt in [r['ground_truth'] for r in infer_results]]
+
+            boxes_gt_valid = []
+            boxes_infer_valid = []
+            for bbox_i, bbox_g in zip(bbox_infer, bbox_gt):
+                if isinstance(bbox_i, list) and isinstance(bbox_g, list):
+                    boxes_gt_valid.append(bbox_g)
+                    boxes_infer_valid.append(bbox_i)
+            boxes_a = torch.tensor(boxes_gt_valid) * 10  # GT框 0-100 -> 0-1000
+            boxes_b = torch.tensor(boxes_infer_valid)
+            iou = box_iou(boxes_a, boxes_b)
+            iou = iou.diag().tolist()
+            # 计算有效IoU率
+            valid_iou_rate = len(iou) / len(bbox_infer)
+            # 计算有效IoU率
+            iou_avg = sum(iou) / len(iou)
+            # 计算IoU@0.5
+            iou_at_05 = sum(1 for i in iou if i > 0.5) / len(iou)
+            # 计算IoU@0.7
+            iou_at_07 = sum(1 for i in iou if i > 0.7) / len(iou) 
+            # 输出结果
+            print(f"有效IoU率: {valid_iou_rate:.2%}")
+            print(f"平均IoU: {iou_avg:.2%}")
+            print(f"Acc@0.5: {iou_at_05:.2%}")
+            print(f"Acc@0.7: {iou_at_07:.2%}")
+               
+    def parse_bbox_infer(self, bbox_str):
+        # 匹配模式: 数字序列，可能包含小数点
+        pattern = r'<box>\s*(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s*</box>'
+        match = re.search(pattern, bbox_str)
+        try:
+            if match:
+                x1, y1, x2, y2 = map(int, match.groups())
+                bbox =  [x1, y1, x2, y2]
+                # 检查坐标是否在有效范围内
+                if all(0 <= coord <= 1000 for coord in bbox):
+                    return bbox
+                else:
+                    logger.info(f"Bounding box coordinates out of range (infer): {bbox_str}")
+                    return 0
+            else:
+                logger.error(f"Error parsing bounding box (infer): {bbox_str}")
+                return 1
+        except Exception as e:
+            logger.error(f"Unexpected error parsing bounding box (infer): {bbox_str}, Error: {e}")
+            return 2
+        
+    def parse_bbox_gt(self, bbox_str):
+        # 匹配模式: 数字序列，可能包含小数点
+        pattern = r'<(\d+)><(\d+)><(\d+)><(\d+)>'
+        match = re.search(pattern, bbox_str)
+        try:
+            if match:
+                x1, y1, x2, y2 = map(int, match.groups())
+                bbox =  [x1, y1, x2, y2]
+                # 检查坐标是否在有效范围内
+                if all(0 <= coord <= 100 for coord in bbox):
+                    return bbox
+                else:
+                    logger.info(f"Bounding box coordinates out of range (gt): {bbox_str}")
+                    return 0
+            else:
+                logger.error(f"Error parsing bounding box (gt): {bbox_str}")
+                return 1
+        except Exception as e:
+            logger.error(f"Unexpected error parsing gt bounding box (gt): {bbox_str}, Error: {e}")
+            return 2
+
 
 if __name__ == '__main__':
     # 模型文件路径
-    model_file_path = '/home/dancer/JR/AI_plus/FM9G4B-V'
+    model_file_path = './FM9G4B-V'
 
     # 推理结果保存路径
-    infer_results_path = '/home/dancer/JR/AI_plus/tools/VRSBench/eval_result' 
+    infer_results_path = './tools/VRSBench/eval_result' 
 
     # VRSBenchs路径
-    VRSBenchs_path = '/data/intelssd/jr/VRSBench'   
+    VRSBenchs_path = '/data/jr/VRSBench'   
 
     # os.environ['NCCL_DEBUG'] = 'INFO'
-    os.environ['NCCL_TIMEOUT'] = '3600'  # 设置NCCL调试信息和超时时间
+    os.environ['NCCL_TIMEOUT'] = '7200'  # 设置NCCL调试信息和超时时间 2h
     
     # 启动DDP进程
     eval = VRSBenchEval(
         data_path = VRSBenchs_path,
         model_file_path = model_file_path, 
         infer_results_path = infer_results_path, 
-        task = "cap", # 任务类型：cap, referring, vqa
-        batch_size = 16
+        task = "referring", # 任务类型：cap, referring, vqa
+        batch_size = 32  # cap_A100->16 referring_5880->32
         )
 
     eval.run()
