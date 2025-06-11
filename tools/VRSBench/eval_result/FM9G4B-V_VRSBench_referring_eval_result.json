@@ -1,0 +1,194 @@
+[
+  {
+    "image_id": "P0003_0002.png",
+    "question": "The large yellow vehicle situated closest to the green area.",
+    "ground_truth": "{<25><40><33><60>}",
+    "inference_result": "<box> 120 460 310 550</box>"
+  },
+  {
+    "image_id": "P0003_0004.png",
+    "question": "The large vehicle is situated towards the middle-left side of the image.",
+    "ground_truth": "{<1><40><9><60>}",
+    "inference_result": "<box> 0 320 180 560</box>"
+  },
+  {
+    "image_id": "P0007_0004.png",
+    "question": "The large vehicle is at the left edge of the road.",
+    "ground_truth": "{<5><24><12><57>}",
+    "inference_result": "<box> 0 380 40 510</box>"
+  },
+  {
+    "image_id": "P0007_0005.png",
+    "question": "The small vehicle located near the top-right corner of the image.",
+    "ground_truth": "{<83><26><93><32>}",
+    "inference_result": "<box> 900 270 950 310</box>"
+  },
+  {
+    "image_id": "P0007_0006.png",
+    "question": "The small vehicle is towards the middle-left side of the image.",
+    "ground_truth": "{<11><39><19><43>}",
+    "inference_result": "<box> 20 346 75 385</box>"
+  },
+  {
+    "image_id": "P0019_0001.png",
+    "question": "The large vehicle is parked on a driveway to the left of the house.",
+    "ground_truth": "{<19><42><24><54>}",
+    "inference_result": "<box> 30 465 135 545</box>"
+  },
+  {
+    "image_id": "P0019_0003.png",
+    "question": "The top-most harbor is located along the coastline, stretching from the center towards the right edge of the image.",
+    "ground_truth": "{<37><25><69><35>}",
+    "inference_result": "<box> 450 270 690 380</box>"
+  },
+  {
+    "image_id": "P0019_0005.png",
+    "question": "The vehicle is located near the top-right corner of the image.",
+    "ground_truth": "{<66><20><77><27>}",
+    "inference_result": "<box> 840 210 950 260</box>"
+  },
+  {
+    "image_id": "P0003_0002.png",
+    "question": "The large vehicle located at the bottom-left corner of the image.",
+    "ground_truth": "{<11><96><24><100>}",
+    "inference_result": "<box> 10 780 250 960</box>"
+  },
+  {
+    "image_id": "P0003_0004.png",
+    "question": "One small vehicle is positioned at the top of the image.",
+    "ground_truth": "{<63><29><68><36>}",
+    "inference_result": "<box> 410 280 510 370</box>"
+  },
+  {
+    "image_id": "P0007_0005.png",
+    "question": "The large vehicle located on the right side.",
+    "ground_truth": "{<78><59><84><94>}",
+    "inference_result": "<box> 840 530 970 630</box>"
+  },
+  {
+    "image_id": "P0007_0006.png",
+    "question": "The large vehicle is located at the right edge extending beyond the image frame.",
+    "ground_truth": "{<96><22><100><53>}",
+    "inference_result": "<box> 890 240 1000 570</box>"
+  },
+  {
+    "image_id": "P0007_0009.png",
+    "question": "The large vehicle located at the far right top of the image.",
+    "ground_truth": "{<29><0><64><7>}",
+    "inference_result": "<box> 750 180 920 300</box>"
+  },
+  {
+    "image_id": "P0019_0002.png",
+    "question": "The harbor located near the top right corner of the image extending into the water.",
+    "ground_truth": "{<66><0><96><23>}",
+    "inference_result": "<box> 580 160 940 340</box>"
+  },
+  {
+    "image_id": "P0019_0003.png",
+    "question": "The bottom-most harbor is situated at the lower part of the coastline.",
+    "ground_truth": "{<52><80><76><96>}",
+    "inference_result": "<box> 470 530 680 620</box>"
+  },
+  {
+    "image_id": "P0019_0005.png",
+    "question": "The vehicle positioned nearest to the top edge of the image.",
+    "ground_truth": "{<70><12><81><19>}",
+    "inference_result": "<box> 800 200 900 250</box>"
+  },
+  {
+    "image_id": "P0003_0002.png",
+    "question": "The small dark-colored vehicle located at the top-right corner of the image.",
+    "ground_truth": "{<87><29><92><36>}",
+    "inference_result": "<box> 870 350 910 430</box>"
+  },
+  {
+    "image_id": "P0003_0004.png",
+    "question": "Another small vehicle is at the very bottom of the image.",
+    "ground_truth": "{<62><82><66><90>}",
+    "inference_result": "<box> 480 610 570 690</box>"
+  },
+  {
+    "image_id": "P0007_0005.png",
+    "question": "The large vehicle located on the bottom-right corner.",
+    "ground_truth": "{<90><60><95><94>}",
+    "inference_result": "<box> 740 520 930 600</box>"
+  },
+  {
+    "image_id": "P0007_0006.png",
+    "question": "The large vehicle at the top-right corner of the image.",
+    "ground_truth": "{<81><0><87><34>}",
+    "inference_result": "<box> 750 230 940 320</box>"
+  },
+  {
+    "image_id": "P0007_0009.png",
+    "question": "The large vehicle located second from the right in the top row.",
+    "ground_truth": "{<28><11><63><17>}",
+    "inference_result": "<box> 830 90 950 240</box>"
+  },
+  {
+    "image_id": "P0019_0002.png",
+    "question": "The harbor at the bottom edge of the image, projecting from the shore into the water.",
+    "ground_truth": "{<32><86><69><98>}",
+    "inference_result": "<box> 0 675 418 940</box>"
+  },
+  {
+    "image_id": "P0019_0004.png",
+    "question": "The harbor partially enclosed by land and situated at the top-right corner of the image is surrounded by lush vegetation.",
+    "ground_truth": "{<73><0><89><14>}",
+    "inference_result": "<box> 700 200 900 400</box>"
+  },
+  {
+    "image_id": "P0019_0006.png",
+    "question": "The small vehicle located at the middle-left section of the image, closer to the house.",
+    "ground_truth": "{<27><33><32><43>}",
+    "inference_result": "<box> 200 450 330 560</box>"
+  },
+  {
+    "image_id": "P0003_0002.png",
+    "question": "The small dark-colored vehicle positioned at the bottom-right corner of the image.",
+    "ground_truth": "{<86><82><91><90>}",
+    "inference_result": "<box> 920 650 1000 780</box>"
+  },
+  {
+    "image_id": "P0007_0001.png",
+    "question": "The small vehicle located towards the top of the image.",
+    "ground_truth": "{<25><5><35><10>}",
+    "inference_result": "<box> 20 16 83 49</box>"
+  },
+  {
+    "image_id": "P0007_0005.png",
+    "question": "The middle-left bottom side large vehicle in the image.",
+    "ground_truth": "{<68><65><73><93>}",
+    "inference_result": "<box> 360 520 480 610</box>"
+  },
+  {
+    "image_id": "P0007_0006.png",
+    "question": "The large vehicle positioned at the bottom part of the image.",
+    "ground_truth": "{<46><68><75><75>}",
+    "inference_result": "<box> 410 630 570 720</box>"
+  },
+  {
+    "image_id": "P0019_0000.png",
+    "question": "The vehicle is parked on a driveway, located near the bottom-middle of the image.",
+    "ground_truth": "{<48><67><55><77>}",
+    "inference_result": "<box> 340 620 590 730</box>"
+  },
+  {
+    "image_id": "P0019_0003.png",
+    "question": "The small ship is positioned out of the water surface towards the top-middle area of the image.",
+    "ground_truth": "{<35><20><41><27>}",
+    "inference_result": "<box> 500 160 540 210</box>"
+  },
+  {
+    "image_id": "P0019_0004.png",
+    "question": "The larger harbor extending to the edge of the image is situated on the right side towards the bottom of the frame.",
+    "ground_truth": "{<89><12><100><34>}",
+    "inference_result": "<box> 530 210 970 460</box>"
+  },
+  {
+    "image_id": "P0019_0006.png",
+    "question": "The small vehicle in the most left of the image.",
+    "ground_truth": "{<19><44><24><55>}",
+    "inference_result": "<box> 0 260 110 330</box>"
+  }
+]

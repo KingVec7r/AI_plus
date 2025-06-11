@@ -104,7 +104,8 @@ class VRSBench(Dataset):
             'image_id': image_id,
             'image_path': image_path,
             'question': item.get('question'),
-            'ground_truth': item.get('ground_truth')
+            'ground_truth': item.get('ground_truth'),
+            'type': item.get('type')  # 添加类型字段，默认为'unknown'    
         }
     
     def load_json_file(self, file_path):
@@ -193,6 +194,7 @@ class VRSBenchEval:
         ground_truth = []
         inference_results = []
         questions = []
+        question_type = []
 
         if local_rank == 0:
             print(f"Evaluating {len(self.dataset)} images from VRSBench for the task of {self.task}...")
@@ -219,6 +221,7 @@ class VRSBenchEval:
                 valid_gts = [batch['ground_truth'][i] for i in valid_indices]
                 valid_ids = [batch['image_id'][i] for i in valid_indices]
                 valid_questions = [batch['question'][i] for i in valid_indices]
+                valid_types = [batch['type'][i] for i in valid_indices]
                     
                 # 构建批处理输入
                 if self.task == "cap" or self.task == "vqa":
@@ -226,6 +229,9 @@ class VRSBenchEval:
  
                 if self.task == "referring":
                     prompt = [f"""This is a remote sensing image.The object referred to by the given referring sentence is unique in the image. You need to provide the location of the referred object in the image in the form of a bounding box. The format of the bounding box is: <box> x1 y1 x2 y2</box>, where x1,y1 are the coordinates of the top-left corner of the bounding box, and x2,y2 are the coordinates of the bottom-right corner of the bounding box. Please note that the coordinates value of the bounding box are relative to the size of the image, ranging from 0 to 1000.\nEnsure that your response includes the coordinates of the bounding box and strictly follows the given format and should not contain any redundant content.\nresponse format: <box> x1 y1 x2 y2</box>.\nreferring sentence: '{q}'""" for q in valid_questions]
+
+                if self.task == "vqa":
+                    prompt = [f"""This is a remote sensing image. You need to answer the given question based on the image content, and your answer should be as concise as possible.\nquestion:'{q}'""" for q in valid_questions]
 
                 batch_inputs = [[{'role': 'user', 'content': [image, prompt]}] for image, prompt in zip(valid_images,prompt)]
                 
@@ -256,6 +262,7 @@ class VRSBenchEval:
                 ground_truth.extend(valid_gts)
                 image_ids.extend(valid_ids)
                 questions.extend(valid_questions)
+                question_type.extend(valid_types)
         
             # 收集所有进程的结果
             all_results = [None for _ in range(self.world_size)]
@@ -263,7 +270,8 @@ class VRSBenchEval:
                 'image_ids': image_ids,
                 'question': questions,
                 'ground_truth': ground_truth,
-                'inference_results': inference_results
+                'inference_results': inference_results,
+                'type': question_type
             })
 
         dist.destroy_process_group()
@@ -273,22 +281,24 @@ class VRSBenchEval:
             merged_question = []
             merged_ground_truth = []
             merged_inference_results = []
+            merged_question_type = []
             
             for result in all_results:
                 merged_image_ids.extend(result['image_ids'])
                 merged_question.extend(result['question'])
                 merged_ground_truth.extend(result['ground_truth'])
                 merged_inference_results.extend(result['inference_results'])
-
+                merged_question_type.extend(result['type'])
             # 保存结果
             infer_results = [
                 {
                     "image_id": img_id,
                     "question": q,
                     "ground_truth": gt,
-                    "inference_result": pred
+                    "inference_result": pred,
+                    "type": q_type
                 }
-                for img_id, q, gt, pred in zip(merged_image_ids, merged_question,merged_ground_truth, merged_inference_results)
+                for img_id, q, gt, pred, q_type in zip(merged_image_ids, merged_question,merged_ground_truth, merged_inference_results, merged_question_type)
             ]
             
             with open(self.results_file_path, "w", encoding="utf-8") as f:
@@ -332,7 +342,7 @@ class VRSBenchEval:
             iou_at_07 = sum(1 for i in iou if i > 0.7) / len(iou) 
             # 输出结果
             print(f"有效IoU率: {valid_iou_rate:.2%}")
-            print(f"平均IoU: {iou_avg:.2%}")
+            print(f"平均IoU: {iou_avg:.2f}")
             print(f"Acc@0.5: {iou_at_05:.2%}")
             print(f"Acc@0.7: {iou_at_07:.2%}")
                
@@ -387,7 +397,7 @@ if __name__ == '__main__':
     infer_results_path = './tools/VRSBench/eval_result' 
 
     # VRSBenchs路径
-    VRSBenchs_path = '/data/intelssd/jr/VRSBench'   
+    VRSBenchs_path = '/data/jr/VRSBench'   
 
     # os.environ['NCCL_DEBUG'] = 'INFO'
     os.environ['NCCL_TIMEOUT'] = '7200'  # 设置NCCL调试信息和超时时间 2h
@@ -397,8 +407,8 @@ if __name__ == '__main__':
         data_path = VRSBenchs_path,
         model_file_path = model_file_path, 
         infer_results_path = infer_results_path, 
-        task = "cap", # 任务类型：cap, referring, vqa
-        batch_size = 64  # cap_A100->64 referring_5880->32
+        task = "vqa", # 任务类型：cap, referring, vqa
+        batch_size = 32  # cap_A100->64 referring_5880->32
         )
 
     eval.run()
