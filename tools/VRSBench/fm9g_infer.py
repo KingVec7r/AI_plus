@@ -41,22 +41,23 @@ def suppress_output():
             sys.stderr = old_stderr
 
 @contextmanager
-def timing(description: str):
+def timing(description: str, enable: bool = True):
     start_time = time.perf_counter()
     yield
     end_time = time.perf_counter()
     total_seconds = end_time - start_time
     
     # 转换为时分秒格式
-    hours = int(total_seconds // 3600)
-    remaining_seconds = total_seconds % 3600
-    minutes = int(remaining_seconds // 60)
-    seconds = int(remaining_seconds % 60)
-    milliseconds = int((remaining_seconds - seconds) * 1000)  # 取整到毫秒
-    
-    # 格式化输出（保留前导零，例如 01:02:03.456）
-    time_format = f"{hours:02d}:{minutes:02d}:{seconds:02d}.{milliseconds:03d}"
-    print(f"{description}: {time_format}")
+    if enable:
+        hours = int(total_seconds // 3600)
+        remaining_seconds = total_seconds % 3600
+        minutes = int(remaining_seconds // 60)
+        seconds = int(remaining_seconds % 60)
+        milliseconds = int((remaining_seconds - seconds) * 1000)  # 取整到毫秒
+        
+        # 格式化输出（保留前导零，例如 01:02:03.456）
+        time_format = f"{hours:02d}:{minutes:02d}:{seconds:02d}.{milliseconds:03d}"
+        print(f"\n{description}: {time_format}")
 
 class VRSBench(Dataset):
     def __init__(self, task="cap", base_dir="/data/jr/VRSBench"):
@@ -70,7 +71,7 @@ class VRSBench(Dataset):
         self.base_dir = base_dir
         self.img_base_dir = os.path.join(base_dir, "Images_val")
         self.data = self.load_json_file(eval_json_path)
-        self.data = self.data[0:4]
+        # self.data = self.data[0:16]
      
     def __len__(self):
         return len(self.data)
@@ -114,7 +115,7 @@ class VRSBench(Dataset):
             return []
         
 class VRSBenchEval:
-    def __init__(self, model_file_path, infer_results_path, task="cap", batch_size=4):
+    def __init__(self, data_path, model_file_path, infer_results_path, task="cap", batch_size=4):
 
         parts = model_file_path.rstrip('/').split('/')
         model_name = parts[-1] if parts else ''
@@ -134,7 +135,7 @@ class VRSBenchEval:
         self.task = task
         self.batch_size = batch_size
         self.world_size = torch.cuda.device_count()
-        self.dataset = VRSBench(task)
+        self.dataset = VRSBench(task, base_dir=data_path)
 
     def run(self):
         try:
@@ -178,10 +179,14 @@ class VRSBenchEval:
         if local_rank == 0:
             print(f"Evaluating {len(self.dataset)} images from VRSBench for the task of {self.task}...")
         
-        with timing(f"[rank{local_rank}] Total inference time"):
+        with timing(f"Total inference time", enable=(local_rank == 0)):
             # 分批处理数据
-            for batch in tqdm(dataloader, disable=local_rank == 5):
-                
+            for batch in tqdm(
+                dataloader, 
+                desc=f"[rank{local_rank}]", 
+                position = local_rank + 4,
+                # disable=local_rank != 0
+                ):                
                 batch_images = [Image.open(path).convert('RGB') for path in batch['image_path']]
                 
                 # 过滤掉加载失败的图像
@@ -204,14 +209,15 @@ class VRSBenchEval:
                 batch_inputs = [[{'role': 'user', 'content': [image, prompt]}] for image, prompt in zip(valid_images,prompt)]
                 
                 # 模型推理
-                with torch.no_grad():
-                    res = model.module.chat(
-                        image=None,
-                        msgs=batch_inputs,
-                        tokenizer=self.tokenizer,
-                        sampling=False,
-                        num_beams=1
-                    )
+                with suppress_output():
+                    with torch.no_grad():
+                        res = model.module.chat(
+                            image=None,
+                            msgs=batch_inputs,
+                            tokenizer=self.tokenizer,
+                            sampling=False,
+                            num_beams=1
+                        )
                 
                 # 处理输出
                 inference_results.extend(res)
@@ -219,14 +225,14 @@ class VRSBenchEval:
                 image_ids.extend(valid_ids)
                 questions.extend(valid_questions)
         
-        # 收集所有进程的结果
-        all_results = [None for _ in range(self.world_size)]
-        dist.all_gather_object(all_results, {
-            'image_ids': image_ids,
-            'question': questions,
-            'ground_truth': ground_truth,
-            'inference_results': inference_results
-        })
+            # 收集所有进程的结果
+            all_results = [None for _ in range(self.world_size)]
+            dist.all_gather_object(all_results, {
+                'image_ids': image_ids,
+                'question': questions,
+                'ground_truth': ground_truth,
+                'inference_results': inference_results
+            })
 
         dist.destroy_process_group()
 
@@ -268,28 +274,26 @@ class VRSBenchEval:
         print(f"BLEU eval result: {bleu_score}")
         print(f"BLEU score: {bleu_score.score:.2f}")
 
-
 if __name__ == '__main__':
     # 模型文件路径
-    model_file_path = '/home/dancer/.cache/jr/workspace/aiplus/FM9G4B-V'
+    model_file_path = '/home/dancer/JR/AI_plus/FM9G4B-V'
 
     # 推理结果保存路径
-    infer_results_path = '/home/dancer/.cache/jr/workspace/aiplus/tools/VRSBench/eval_result'    
+    infer_results_path = '/home/dancer/JR/AI_plus/tools/VRSBench/eval_result' 
 
-    # 任务类型：cap, referring, vqa
-    task = "cap"
-    
-    batch_size = 8
+    # VRSBenchs路径
+    VRSBenchs_path = '/data/intelssd/jr/VRSBench'   
 
     # os.environ['NCCL_DEBUG'] = 'INFO'
     os.environ['NCCL_TIMEOUT'] = '3600'  # 设置NCCL调试信息和超时时间
     
     # 启动DDP进程
     eval = VRSBenchEval(
+        data_path = VRSBenchs_path,
         model_file_path = model_file_path, 
         infer_results_path = infer_results_path, 
-        task = "cap", 
-        batch_size = 4
+        task = "cap", # 任务类型：cap, referring, vqa
+        batch_size = 16
         )
 
     eval.run()
