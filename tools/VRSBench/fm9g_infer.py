@@ -70,6 +70,7 @@ class VRSBench(Dataset):
         self.base_dir = base_dir
         self.img_base_dir = os.path.join(base_dir, "Images_val")
         self.data = self.load_json_file(eval_json_path)
+        self.data = self.data[0:4]
      
     def __len__(self):
         return len(self.data)
@@ -132,30 +133,32 @@ class VRSBenchEval:
         self.results_file_path = os.path.join(infer_results_path, f"{model_name}_VRSBench_{task}_eval_result.json")
         self.task = task
         self.batch_size = batch_size
+        self.world_size = torch.cuda.device_count()
         self.dataset = VRSBench(task)
 
     def run(self):
-        infer_result = torch.multiprocessing.spawn(
-            self.vrsbench_eval_ddp,
-            # args=(),
-            nprocs=world_size,
-            # join=True
-        )
-        self.result_eval(infer_result)
+        try:
+            torch.multiprocessing.spawn(
+                self.vrsbench_eval_ddp,
+                # args=(),
+                nprocs=self.world_size,
+                # join=True
+            )
+        except Exception as e:
+            print(f"evaluate failed: {e}")
 
     def vrsbench_eval_ddp(self, local_rank):
-        world_size = torch.cuda.device_count()
 
         if local_rank == 0:
             print("Start VRSBench evaluation with DDP...")
 
         # 初始化进程组
         torch.cuda.set_device(local_rank)
-        os.environ['WORLD_SIZE'] = str(world_size)
+        os.environ['WORLD_SIZE'] = str(self.world_size)
         os.environ['RANK'] = str(local_rank)
         os.environ['MASTER_ADDR'] = 'localhost'
         os.environ['MASTER_PORT'] = '12355'
-        dist.init_process_group("nccl", world_size=world_size, init_method='env://')
+        dist.init_process_group("nccl", world_size=self.world_size, init_method='env://')
 
         if local_rank == 0:
             print(f"Transfering model to DDP model...")
@@ -164,7 +167,7 @@ class VRSBenchEval:
         model = DDP(model, device_ids=[local_rank], output_device=local_rank)
         model.eval()
 
-        sampler = DistributedSampler(self.dataset, num_replicas=world_size, rank=local_rank, shuffle=False)
+        sampler = DistributedSampler(self.dataset, num_replicas=self.world_size, rank=local_rank, shuffle=False)
         dataloader = DataLoader(self.dataset, batch_size=self.batch_size, sampler=sampler, num_workers=2)
 
         image_ids = []
@@ -177,7 +180,7 @@ class VRSBenchEval:
         
         with timing(f"[rank{local_rank}] Total inference time"):
             # 分批处理数据
-            for batch in tqdm(dataloader, disable=local_rank != 0):
+            for batch in tqdm(dataloader, disable=local_rank == 5):
                 
                 batch_images = [Image.open(path).convert('RGB') for path in batch['image_path']]
                 
@@ -217,7 +220,7 @@ class VRSBenchEval:
                 questions.extend(valid_questions)
         
         # 收集所有进程的结果
-        all_results = [None for _ in range(world_size)]
+        all_results = [None for _ in range(self.world_size)]
         dist.all_gather_object(all_results, {
             'image_ids': image_ids,
             'question': questions,
@@ -253,8 +256,9 @@ class VRSBenchEval:
             with open(self.results_file_path, "w", encoding="utf-8") as f:
                 json.dump(infer_results, f, ensure_ascii=False, indent=2)  
 
-            print(f"✅ 推理结果已保存至 {infer_results_path}")
-            return infer_results
+            print(f"✅ 推理结果已保存至 {self.results_file_path}")
+
+            self.result_eval(infer_results)
         
     def result_eval(self, infer_results):    
         # 计算评估指标
@@ -270,21 +274,22 @@ if __name__ == '__main__':
     model_file_path = '/home/dancer/.cache/jr/workspace/aiplus/FM9G4B-V'
 
     # 推理结果保存路径
-    infer_results_path = '/home/dancer/.cache/jr/workspace/aiplus/tools/VRSBench/eval_result/fm9g_infer_results.json'    
+    infer_results_path = '/home/dancer/.cache/jr/workspace/aiplus/tools/VRSBench/eval_result'    
 
     # 任务类型：cap, referring, vqa
     task = "cap"
     
-    world_size = torch.cuda.device_count()
     batch_size = 8
-    # world_size = 1
-    print(f"使用 {world_size} 个GPU，DDP推理加速")
+
+    # os.environ['NCCL_DEBUG'] = 'INFO'
+    os.environ['NCCL_TIMEOUT'] = '3600'  # 设置NCCL调试信息和超时时间
     
     # 启动DDP进程
-    torch.multiprocessing.spawn(
-        vrsbench_eval_ddp,
-        # (local_rank, world_size, model_file_path, infer_results_path, task="cap", batch_size=4)
-        args=(world_size, model_file_path, infer_results_path, task, batch_size),
-        nprocs=world_size,
-        # join=True
-    )
+    eval = VRSBenchEval(
+        model_file_path = model_file_path, 
+        infer_results_path = infer_results_path, 
+        task = "cap", 
+        batch_size = 4
+        )
+
+    eval.run()
