@@ -206,7 +206,7 @@ class VRSBenchEval:
                 position = local_rank + 4,
                 # disable=local_rank != 0
                 )):  
-                if i%20==0:
+                if i%15==0:
                     dist.barrier()              
                 batch_images = [Image.open(path).convert('RGB') for path in batch['image_path']]
                 
@@ -233,14 +233,20 @@ class VRSBenchEval:
                 if self.task == "referring":
                     max_new_tokens = 64
                 else:
-                    max_new_tokens = 2048
+                    max_new_tokens = 1024
+
+                if self.task == "cap":
+                    sampling = True
+                else:
+                    sampling = False
+
                 with suppress_output():
                     with torch.no_grad():
                         res = model.module.chat(
                             image=None,
                             msgs=batch_inputs,
                             tokenizer=self.tokenizer,
-                            sampling=False,
+                            sampling=sampling,
                             num_beams=1,
                             max_new_tokens = max_new_tokens,
                         )
@@ -381,7 +387,7 @@ if __name__ == '__main__':
     infer_results_path = './tools/VRSBench/eval_result' 
 
     # VRSBenchs路径
-    VRSBenchs_path = '/data/jr/VRSBench'   
+    VRSBenchs_path = '/data/intelssd/jr/VRSBench'   
 
     # os.environ['NCCL_DEBUG'] = 'INFO'
     os.environ['NCCL_TIMEOUT'] = '7200'  # 设置NCCL调试信息和超时时间 2h
@@ -391,8 +397,8 @@ if __name__ == '__main__':
         data_path = VRSBenchs_path,
         model_file_path = model_file_path, 
         infer_results_path = infer_results_path, 
-        task = "referring", # 任务类型：cap, referring, vqa
-        batch_size = 32  # cap_A100->16 referring_5880->32
+        task = "cap", # 任务类型：cap, referring, vqa
+        batch_size = 64  # cap_A100->64 referring_5880->32
         )
 
     eval.run()
