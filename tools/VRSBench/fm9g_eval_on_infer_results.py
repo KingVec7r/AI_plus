@@ -43,7 +43,18 @@ logger = logging.getLogger(__name__)
 # logger.warning('这是警告信息')
 # logger.error('这是错误信息')
 # logger.critical('这是严重错误信息')
-
+@contextmanager
+def suppress_output():
+    with open(os.devnull, "w") as devnull:
+        old_stdout = sys.stdout
+        old_stderr = sys.stderr
+        sys.stdout = devnull
+        sys.stderr = devnull
+        try:
+            yield
+        finally:
+            sys.stdout = old_stdout
+            sys.stderr = old_stderr
 
 
 @contextmanager
@@ -64,14 +75,49 @@ def timing(description: str, enable: bool = True):
         # 格式化输出（保留前导零，例如 01:02:03.456）
         time_format = f"{hours:02d}:{minutes:02d}:{seconds:02d}.{milliseconds:03d}"
         print(f"\n{description}: {time_format}")
+
+class PromptDataset(Dataset):
+    def __init__(self, prompts):
+        self.data = prompts
+    
+    def __len__(self):
+        """返回数据集大小"""
+        return len(self.data)
+    
+    def __getitem__(self, idx):
+        """获取指定索引的样本"""
+        # 直接返回原始文本
+        return {"prompt": self.data[idx]}
         
 class VRSBenchEval:
     def __init__(self, data_path, model_file_path, infer_results_path, task="cap", batch_size=4):
-
         parts = model_file_path.rstrip('/').split('/')
         model_name = parts[-1] if parts else ''
+
+        self.llm_judge_results = []
+        self.llm_type_results = []
+
+        if task == "vqa":
+            model_config = {
+                'trust_remote_code': True,
+                'attn_implementation': 'sdpa',
+                'torch_dtype': torch.bfloat16,
+            }
+
+            print(f"Loading model from {model_file_path}...")
+
+            with suppress_output():
+                self.model = AutoModel.from_pretrained(model_file_path, **model_config)
+                self.tokenizer = AutoTokenizer.from_pretrained(model_file_path, trust_remote_code=True)
+
         self.results_file_path = os.path.join(infer_results_path, f"{model_name}_VRSBench_{task}_eval_result.json")
+
         self.task = task
+        self.batch_size = batch_size
+        self.world_size = torch.cuda.device_count()
+        
+        self.llm_judeg_results_file_path = os.path.join(infer_results_path, f"{model_name}_VRSBench_{task}_llm_judge_result.json")
+        
 
     
     def run(self):
@@ -123,70 +169,177 @@ class VRSBenchEval:
             print(f"Acc@0.7: {iou_at_07:.2%}")
 
         elif self.task == "vqa": # vllm 大模型打分
-            import ray
-            from packaging.version import Version
-            from ray.data.llm import build_llm_processor, vLLMEngineProcessorConfig
-            assert Version(ray.__version__) >= Version("2.44.1"), (
-                "Ray version must be at least 2.44.1"
-            )
-            #   [r['type'] for r in infer_results]
-            prompt = [f"""Question: {q}, Ground Truth Answer: {gt}, Predicted Answer: {pred}. Does the predicted answer match the ground truth? Answer 1 for match and 0 for not match. Use semantic meaning not exact match. Synonyms are also treated as a match, e.g., pond and swimming pool.""" for q, gt, pred in zip(
-                [r['question'] for r in infer_results],
-                [r['ground_truth'] for r in infer_results],
-                [r['inference_result'] for r in infer_results]
+            infer_results = infer_results[:32]
+
+            type_list = ['Category', 'Presence', 'Quantity', 'Color', 'Shape', 'Size','Position','Direction','Scene','Reasoning']
+
+            question_list = [r['question'] for r in infer_results]
+            ground_truth_list = [r['ground_truth'] for r in infer_results]
+            inference_result_list = [r['inference_result'] for r in infer_results]
+            type_list = [r['type'] for r in infer_results]
+            # 生成提示词
+
+            prompts_for_judge = [f"""Question: {q}, Ground Truth Answer: {gt}, Predicted Answer: {pred}. Does the predicted answer match the ground truth? Answer 1 for match and 0 for not match. Use semantic meaning not exact match. Synonyms are also treated as a match, e.g., pond and swimming pool.""" for q, gt, pred in zip(
+                question_list, ground_truth_list, inference_result_list
+            )]
+
+            prompts_for_type = [f"""Question: {q}, Answer: {gt}. Select the most appropriate tag (a single word) for the question based on the content of this Q&A pair. Your response should be chosen from the candidate tags provided and should not include any extra content. Candidate tags: {str(type_list)}""" for q, gt in zip(
+                question_list, ground_truth_list
             )]
             
-            ds = ray.data.from_items([{"text": p} for p in prompt])
-            print(ds.schema())
+            print('Generating llm judge results...')
 
-            size = ds.count()
-            print(f"Size of dataset: {size} prompts")
+            try:
+                torch.multiprocessing.spawn(
+                    self.judge_and_get_type_ddp,
+                    args=(prompts_for_judge, prompts_for_type),
+                    nprocs=self.world_size,
+                    # join=True
+                )
+            except Exception as e:
+                print(f"evaluate failed: {e}")
 
-            # Configure vLLM engine.
-            config = vLLMEngineProcessorConfig(
-                model_source="unsloth/Llama-3.1-8B-Instruct",
-                engine_kwargs={
-                    "enable_chunked_prefill": True,
-                    "max_num_batched_tokens": 4096,
-                    "max_model_len": 16384,
-                },
-                concurrency=1,  # set the number of parallel vLLM replicas
-                batch_size=64,
-            )
+            for i, (output_j, output_t) in enumerate(zip(self.llm_judge_results, self.llm_type_results)):
+                infer_results[i]['judge_llm'] = output_j
+                infer_results[i]['type_llm'] = output_t
+            
+            # 保存结果
+            with open(self.llm_judeg_results_file_path, 'w', encoding='utf-8') as f:
+                json.dump(infer_results, f, ensure_ascii=False, indent=4)
+            print(f"✅ LLM 评估结果已保存至 {self.llm_judeg_results_file_path}")
 
-            # Create a Processor object, which will be used to
-            # do batch inference on the dataset
-            vllm_processor = build_llm_processor(
-                config,
-                preprocess=lambda row: dict(
-                    messages=[
-                        {"role": "system", "content": "You are a bot that responds with haikus."},
-                        {"role": "user", "content": row["text"]},
-                    ],
-                    sampling_params=dict(
-                        temperature=0.3,
-                        max_tokens=250,
-                    ),
-                ),
-                postprocess=lambda row: dict(
-                    answer=row["generated_text"],
-                    **row,  # This will return all the original columns in the dataset.
-                ),
-            )
+    def judge_and_get_type_ddp(self, local_rank, prompts_j=None, prompts_t=None):
 
-            ds = vllm_processor(ds)
+        if not prompts_j or not prompts_t:
+            return None
+        
+        prompts_j_data = PromptDataset(prompts_j)
+        prompts_t_data = PromptDataset(prompts_t)
 
-            # Peek first 10 results.
-            # NOTE: This is for local testing and debugging. For production use case,
-            # one should write full result out as shown below.
-            outputs = ds.take(limit=10)
+        if local_rank == 0:
+            print("Start VRSBench evaluation with DDP...")
 
-            for output in outputs:
-                prompt = output["prompt"]
-                generated_text = output["generated_text"]
-                print(f"Prompt: {prompt!r}")
-                print(f"Generated text: {generated_text!r}")
-               
+        # 初始化进程组
+        torch.cuda.set_device(local_rank)
+        os.environ['WORLD_SIZE'] = str(self.world_size)
+        os.environ['RANK'] = str(local_rank)
+        os.environ['MASTER_ADDR'] = 'localhost'
+        os.environ['MASTER_PORT'] = '12355'
+        dist.init_process_group("nccl", world_size=self.world_size, init_method='env://')
+
+        if local_rank == 0:
+            print(f"Transfering model to DDP model...")
+        
+        model = self.model.cuda()
+        model = DDP(model, device_ids=[local_rank], output_device=local_rank)
+        model.eval()
+
+        sampler_j = DistributedSampler(prompts_j_data, num_replicas=self.world_size, rank=local_rank, shuffle=False)
+        sampler_t = DistributedSampler(prompts_t_data, num_replicas=self.world_size, rank=local_rank, shuffle=False)
+        dataloader_j = DataLoader(prompts_j_data, batch_size=self.batch_size, sampler=sampler_j, num_workers=2)
+        dataloader_t = DataLoader(prompts_t_data, batch_size=self.batch_size, sampler=sampler_t, num_workers=2)
+
+        image_ids = []
+        ground_truth = []
+        inference_results = []
+        questions = []
+        question_type = []
+
+        if local_rank == 0:
+            print(f"\nEvaluating {len(prompts_j_data)} results for the task of judge...")
+        
+        with timing(f"\nTotal inference time for judge", enable=(local_rank == 0)):
+            # 分批处理数据
+            # dist.barrier()
+            for i,batch in enumerate(tqdm(
+                dataloader_j, 
+                desc=f"[rank{local_rank}]", 
+                position = local_rank + 4,
+                # disable=local_rank != 0
+                )):  
+                if i%15==0:
+                    dist.barrier()             
+                    
+                prompt = batch['prompt']
+
+                batch_inputs = [[{'role': 'user', 'content': [p]}] for p in prompt]
+                
+                # 模型推理
+                max_new_tokens = 64
+                sampling = True
+
+                with suppress_output():
+                    with torch.no_grad():
+                        res = model.module.chat(
+                            image=None,
+                            msgs=batch_inputs,
+                            tokenizer=self.tokenizer,
+                            sampling=sampling,
+                            num_beams=1,
+                            max_new_tokens = max_new_tokens,
+                        )
+                
+                # 处理输出
+                inference_results.extend(res)
+        
+            # 收集所有进程的结果
+            all_results = [None for _ in range(self.world_size)]
+            dist.all_gather_object(all_results, {
+                'inference_results': inference_results,
+            })
+
+        if local_rank == 0:        
+            for result in all_results:
+                self.llm_judge_results.extend(result['inference_results'])
+
+            print(f"\nEvaluating {len(prompts_t_data)} results for the task of type...")
+        
+        with timing(f"\nTotal inference time for judge", enable=(local_rank == 0)):
+            # 分批处理数据
+            # dist.barrier()
+            for i,batch in enumerate(tqdm(
+                dataloader_t, 
+                desc=f"[rank{local_rank}]", 
+                position = local_rank + 4,
+                # disable=local_rank != 0
+                )):  
+                if i%15==0:
+                    dist.barrier()             
+                    
+                prompt = batch['prompt']
+
+                batch_inputs = [[{'role': 'user', 'content': [p]}] for p in prompt]
+                
+                # 模型推理
+                max_new_tokens = 64
+                sampling = True
+
+                with suppress_output():
+                    with torch.no_grad():
+                        res = model.module.chat(
+                            image=None,
+                            msgs=batch_inputs,
+                            tokenizer=self.tokenizer,
+                            sampling=sampling,
+                            num_beams=1,
+                            max_new_tokens = max_new_tokens,
+                        )
+                
+                # 处理输出
+                inference_results.extend(res)
+        
+            # 收集所有进程的结果
+            all_results = [None for _ in range(self.world_size)]
+            dist.all_gather_object(all_results, {
+                'inference_results': inference_results,
+            })
+
+        if local_rank == 0:        
+            for result in all_results:
+                self.llm_type_results.extend(result['inference_results'])
+
+        dist.destroy_process_group()
+                          
     def parse_bbox_infer(self, bbox_str):
         # 匹配模式: 数字序列，可能包含小数点
         pattern = r'<box>\s*(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s*</box>'
@@ -273,7 +426,7 @@ if __name__ == '__main__':
         model_file_path = model_file_path, 
         infer_results_path = infer_results_path, 
         task = "vqa", # 任务类型：cap, referring, vqa
-        batch_size = 32  # cap_A100->64 referring_5880->32
+        batch_size = 16  # cap_A100->64 referring_5880->32
         )
 
     eval.run()

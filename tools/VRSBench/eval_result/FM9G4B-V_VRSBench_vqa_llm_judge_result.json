@@ -1,0 +1,226 @@
+[
+    {
+        "image_id": "P0003_0002.png",
+        "question": "What color are the large vehicles seen in the image?",
+        "ground_truth": "Yellow",
+        "inference_result": "Yellow.",
+        "type": "object color"
+    },
+    {
+        "image_id": "P0003_0004.png",
+        "question": "How many vehicles are visible in the image?",
+        "ground_truth": "3",
+        "inference_result": "2.",
+        "type": "object quantity"
+    },
+    {
+        "image_id": "P0003_0004.png",
+        "question": "What object class is the bottom-most vehicle?",
+        "ground_truth": "small-vehicle",
+        "inference_result": "car",
+        "type": "object category"
+    },
+    {
+        "image_id": "P0007_0004.png",
+        "question": "Are there any large vehicles that are positioned away from the main cluster?",
+        "ground_truth": "yes",
+        "inference_result": "Yes.",
+        "type": "object existence"
+    },
+    {
+        "image_id": "P0007_0005.png",
+        "question": "Where is the small vehicle located?",
+        "ground_truth": "Top-right",
+        "inference_result": "The small vehicle is located in the top right corner of the image.",
+        "type": "object position"
+    },
+    {
+        "image_id": "P0007_0006.png",
+        "question": "Where is the small vehicle located?",
+        "ground_truth": "middle-left",
+        "inference_result": "The small vehicle is located in the parking lot, near a building with multiple trucks parked nearby.",
+        "type": "object position"
+    },
+    {
+        "image_id": "P0007_0009.png",
+        "question": "What is the predominant color of the large vehicles in the image?",
+        "ground_truth": "white",
+        "inference_result": "White.",
+        "type": "object color"
+    },
+    {
+        "image_id": "P0019_0000.png",
+        "question": "What type of area is visible in the image?",
+        "ground_truth": "residential",
+        "inference_result": "Residential.",
+        "type": "object category"
+    },
+    {
+        "image_id": "P0019_0001.png",
+        "question": "Is there a vehicle present in the image?",
+        "ground_truth": "Yes",
+        "inference_result": "Yes.",
+        "type": "object existence"
+    },
+    {
+        "image_id": "P0019_0002.png",
+        "question": "How many harbors are visible in the image?",
+        "ground_truth": "3",
+        "inference_result": "1.",
+        "type": "object quantity"
+    },
+    {
+        "image_id": "P0019_0003.png",
+        "question": "How many harbors are visible in the image?",
+        "ground_truth": "2",
+        "inference_result": "1.",
+        "type": "object quantity"
+    },
+    {
+        "image_id": "P0019_0004.png",
+        "question": "Where is the smaller harbor located?",
+        "ground_truth": "top-right",
+        "inference_result": "The image provided is an aerial view of a residential area, not showing any harbors. Therefore, it's impossible to determine the location or presence of smaller harbors based on this particular satellite imagery.",
+        "type": "object position"
+    },
+    {
+        "image_id": "P0019_0005.png",
+        "question": "Where is the house located in relation to the vehicles?",
+        "ground_truth": "Under",
+        "inference_result": "The house is located to the right of one vehicle and slightly behind another.",
+        "type": "object position"
+    },
+    {
+        "image_id": "P0019_0006.png",
+        "question": "Which small vehicle is positioned at the right-most spot in their category?",
+        "ground_truth": "middle-right",
+        "inference_result": "The small vehicle positioned at the right-most spot in their category is a white car.",
+        "type": "object position"
+    },
+    {
+        "image_id": "P0019_0007.png",
+        "question": "What is the object at the top-left position?",
+        "ground_truth": "Small-vehicle",
+        "inference_result": "car",
+        "type": "object category"
+    },
+    {
+        "image_id": "P0019_0009.png",
+        "question": "Is there a ship near the left harbor?",
+        "ground_truth": "Yes",
+        "inference_result": "Yes.",
+        "type": "object existence"
+    },
+    {
+        "image_id": "P0019_0012.png",
+        "question": "Where is the right-most harbor located?",
+        "ground_truth": "middle-right",
+        "inference_result": "The right-most harbor is located at the bottom of a small dock.",
+        "type": "object position"
+    },
+    {
+        "image_id": "P0019_0016.png",
+        "question": "Is the image taken from a satellite?",
+        "ground_truth": "Yes",
+        "inference_result": "Yes.",
+        "type": "image"
+    },
+    {
+        "image_id": "P0019_0017.png",
+        "question": "What is the main body of water in the image?",
+        "ground_truth": "lake",
+        "inference_result": "The main body of water in the image is a lake.",
+        "type": "object category"
+    },
+    {
+        "image_id": "P0019_0020.png",
+        "question": "Which harbor is positioned more centrally along the bottom edge?",
+        "ground_truth": "bottom-middle",
+        "inference_result": "The harbor positioned more centrally along the bottom edge is Port of New York and New Jersey.",
+        "type": "object position"
+    },
+    {
+        "image_id": "P0019_0022.png",
+        "question": "How many small vehicles are visible?",
+        "ground_truth": "3",
+        "inference_result": "3.",
+        "type": "object quantity"
+    },
+    {
+        "image_id": "P0019_0022.png",
+        "question": "Where is the other small vehicle in relation to the image viewing area?",
+        "ground_truth": "rightmost edge",
+        "inference_result": "The other small vehicle is located in the lower right corner of the image viewing area.",
+        "type": "object position"
+    },
+    {
+        "image_id": "P0019_0024.png",
+        "question": "What color is the roof of the large structure in the image?",
+        "ground_truth": "Red",
+        "inference_result": "Red.",
+        "type": "object color"
+    },
+    {
+        "image_id": "P0019_0024.png",
+        "question": "Is the vehicle near the top of the image closer to a building or to the boundary of the property?",
+        "ground_truth": "Building",
+        "inference_result": "The vehicle near the top of the image is closer to a building.",
+        "type": "object position"
+    },
+    {
+        "image_id": "P0019_0025.png",
+        "question": "Is the harbor small or large in size compared to the image?",
+        "ground_truth": "small",
+        "inference_result": "The harbor appears to be small in size compared to the image.",
+        "type": "object size"
+    },
+    {
+        "image_id": "P0019_0030.png",
+        "question": "What is the object category of the unique object?",
+        "ground_truth": "small-vehicle",
+        "inference_result": "house",
+        "type": "object category"
+    },
+    {
+        "image_id": "P0019_0032.png",
+        "question": "Is there a ship in the image?",
+        "ground_truth": "Yes",
+        "inference_result": "Yes.",
+        "type": "object existence"
+    },
+    {
+        "image_id": "P0019_0037.png",
+        "question": "How many ships are present in the image?",
+        "ground_truth": "1",
+        "inference_result": "1.",
+        "type": "object quantity"
+    },
+    {
+        "image_id": "P0019_0040.png",
+        "question": "What feature is found at the water's edge in the center of the image?",
+        "ground_truth": "ship",
+        "inference_result": "Dock.",
+        "type": "object category"
+    },
+    {
+        "image_id": "P0019_0046.png",
+        "question": "What portion of the image does the harbor occupy?",
+        "ground_truth": "right",
+        "inference_result": "The harbor occupies the right portion of this image.",
+        "type": "object position"
+    },
+    {
+        "image_id": "P0019_0047.png",
+        "question": "What size is the harbor in the image?",
+        "ground_truth": "small",
+        "inference_result": "The image does not show a harbor. It depicts an area with trees, grassy land, and some structures in the background that are too distant to be clearly identified as part of any waterfront or harborside features.",
+        "type": "object size"
+    },
+    {
+        "image_id": "P0019_0048.png",
+        "question": "How many vehicles are visible in the image?",
+        "ground_truth": "1",
+        "inference_result": "1.",
+        "type": "object quantity"
+    }
+]
