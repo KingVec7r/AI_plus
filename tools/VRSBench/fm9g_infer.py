@@ -1,32 +1,24 @@
 """
-Name chat.py
-Date 2025/5/6 11:20
-Version 1.1 (Optimized for faster inference)
-TODO: 增加模型量化支持和更细粒度的性能监控
+Use vllm python 10
 """
 
 import time
 import os
 import json
 import torch
-import torch.nn as nn
-import numpy as np
+
 from PIL import Image
 from contextlib import contextmanager
 from tqdm import tqdm
-from sacrebleu.metrics import BLEU
-from transformers import AutoModel, AutoTokenizer, TextStreamer
+
+from transformers import AutoModel, AutoTokenizer
 
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import Dataset, DataLoader
 from torch.utils.data.distributed import DistributedSampler
 
-from torchvision import transforms
-from torchvision.ops import box_iou
-
 import sys
-import re
 
 import logging
 
@@ -314,7 +306,7 @@ if __name__ == '__main__':
     infer_results_path = './tools/VRSBench/eval_result' 
 
     # VRSBenchs路径
-    VRSBenchs_path = '/data/jr/VRSBench'   
+    VRSBenchs_path = '/data/intelssd/jr/VRSBench'   
 
     # os.environ['NCCL_DEBUG'] = 'INFO'
     os.environ['NCCL_TIMEOUT'] = '7200'  # 设置NCCL调试信息和超时时间 2h
@@ -324,7 +316,7 @@ if __name__ == '__main__':
         data_path = VRSBenchs_path,
         model_file_path = model_file_path, 
         infer_results_path = infer_results_path, 
-        task = "vqa", # 任务类型：cap, referring, vqa
+        task = "referring", # 任务类型：cap, referring, vqa
         batch_size = 32  # cap_A100->64 referring_5880->32
         )
 

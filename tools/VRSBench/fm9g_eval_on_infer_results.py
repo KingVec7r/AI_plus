@@ -62,7 +62,7 @@ def timing(description: str, enable: bool = True):
         print(f"\n{description}: {time_format}")
         
 class VRSBenchEval:
-    def __init__(self, data_path, model_file_path, infer_results_path, task="cap", batch_size=4):
+    def __init__(self, data_path, model_file_path, infer_results_path, task=None, batch_size=4):
         parts = model_file_path.rstrip('/').split('/')
         model_name = parts[-1] if parts else ''
 
@@ -72,24 +72,29 @@ class VRSBenchEval:
         self.judge_model_path = "/data/intelssd/jr/weights/Qwen/Qwen2.5-7B-Instruct"
 
         self.results_file_path = os.path.join(infer_results_path, f"{model_name}_VRSBench_{task}_eval_result.json")
+        self.results_file_dict = {t:os.path.join(infer_results_path, f"{model_name}_VRSBench_{t}_eval_result.json") for t in ['cap','referring','vqa']}
 
         self.task = task
         self.batch_size = batch_size
         self.world_size = torch.cuda.device_count()
         
-        self.llm_judeg_results_file_path = os.path.join(infer_results_path, f"{model_name}_VRSBench_{task}_llm_judge_result.json")
+        self.llm_judeg_results_file_path = os.path.join(infer_results_path, f"{model_name}_VRSBench_vqa_llm_judge_result.json")
           
     def run(self):
-        try:
-            self.vrsbench_eval_ddp()
-        except Exception as e:
-            print(f"evaluate failed: {e}")
+        self.vrsbench_eval_ddp()
 
     def vrsbench_eval_ddp(self):
-        infer_results = self.load_json_file(self.results_file_path)
-        self.result_eval(infer_results)
+        if self.task:
+            infer_results = self.load_json_file(self.results_file_path)
+            self.result_eval(infer_results)
+        else:
+            for t in ['cap','referring','vqa']:
+                self.task = t
+                self.results_file_path = self.results_file_dict[t]
+                infer_results = self.load_json_file(self.results_file_path)
+                self.result_eval(infer_results)
         
-    def result_eval(self, infer_results):    
+    def result_eval(self, infer_results, skip_llm=True):    
         if self.task == "cap":
             # 计算BLEU分数
             print("Calculating BLEU score...")
@@ -128,61 +133,88 @@ class VRSBenchEval:
             print(f"Acc@0.7: {iou_at_07:.2%}")
 
         elif self.task == "vqa": # vllm 大模型打分
-            
-            from vllm import LLM, SamplingParams
             # infer_results = infer_results[:32]
 
             type_list = ['Category', 'Presence', 'Quantity', 'Color', 'Shape', 'Size','Position','Direction','Scene','Reasoning']
 
-            question_list = [r['question'] for r in infer_results]
-            ground_truth_list = [r['ground_truth'] for r in infer_results]
-            inference_result_list = [r['inference_result'] for r in infer_results]
-            
-            # 生成提示词
-            prompts_for_judge = [f"""Question: {q}, Ground Truth Answer: {gt}, Predicted Answer: {pred}. Does the predicted answer match the ground truth? Answer with 1 for match and 0 for no match. ONLY output 0 or 1 —no analysis, explanations, or extra text. Synonyms (e.g., "pond" and "swimming pool") count as matches.""" for q, gt, pred in zip(
-                question_list, ground_truth_list, inference_result_list
-            )]
+            if not skip_llm:
+                question_list = [r['question'] for r in infer_results]
+                ground_truth_list = [r['ground_truth'] for r in infer_results]
+                inference_result_list = [r['inference_result'] for r in infer_results]
+                
+                # 生成提示词
+                prompts_for_judge = [f"""Question: {q}, Ground Truth Answer: {gt}, Predicted Answer: {pred}. Does the predicted answer match the ground truth? Answer with 1 for match and 0 for no match. ONLY output 0 or 1 —no analysis, explanations, or extra text. Synonyms (e.g., "pond" and "swimming pool") count as matches.""" for q, gt, pred in zip(
+                    question_list, ground_truth_list, inference_result_list
+                )]
 
-            prompts_for_type = [f"""'Question: {q}, Answer: {gt}'. Select the most appropriate tag for the above QA pair. The tag should be chosen from the candidate list and should reflect the most prominent attribute or aspect that the Q&A focuses on. Your response should include only the tag word —no explanations, punctuation, or additional text. Candidate tags: {str(type_list)}""" for q, gt in zip(
-                question_list, ground_truth_list
-            )]
-            
-            print('Generating llm judge results...')
-            prompts = prompts_for_judge + prompts_for_type
-            preds = self.llm_generate(prompts)
+                prompts_for_type = [f"""'Question: {q}, Answer: {gt}'. Select the most appropriate tag for the above QA pair. The tag should be chosen from the candidate list and should reflect the most prominent attribute or aspect that the Q&A focuses on. Your response should include only the tag word —no explanations, punctuation, or additional text. Candidate tags: {str(type_list)}""" for q, gt in zip(
+                    question_list, ground_truth_list
+                )]
+                
+                print('Generating llm judge results...')
+                prompts = prompts_for_judge + prompts_for_type
+                preds = self.llm_generate(prompts)
 
-            llm_judges = preds[:len(preds)//2]
-            llm_types = preds[len(preds)//2:]
+                llm_judges = preds[:len(preds)//2]
+                llm_types = preds[len(preds)//2:]
 
-            judeg_results = [[self.extract_first_number(lj) for lj in lj_i] for lj_i in llm_judges]
-            type_results = [[self.extract_first_word(lt, type_list) for lt in lt_i] for lt_i in llm_types]
+                judeg_results = [[self.extract_first_number(lj) for lj in lj_i] for lj_i in llm_judges]
+                type_results = [[self.extract_first_word(lt, type_list) for lt in lt_i] for lt_i in llm_types]
 
-            final_judge_results = self.extract_majority(judeg_results)
-            final_type_results = self.extract_majority(type_results)
+                final_judge_results = self.extract_majority(judeg_results)
+                final_type_results = self.extract_majority(type_results)
 
-            infer_results = [
-                {
-                    **r,
-                    # 'llm_judge':lj,
-                    # 'llm_type':lt,
-                    # 'llm_type_ori':lt_o,
-                    'llm_judge_result':fj,
-                    'llm_type_result':ft
-                } for r, lj, lt, lt_o, fj, ft in zip(
-                    infer_results, 
-                    judeg_results, 
-                    type_results,
-                    llm_types,
-                    final_judge_results,
-                    final_type_results
-                )
-            ]
-      
-            # 保存结果
-            with open(self.llm_judeg_results_file_path, 'w', encoding='utf-8') as f:
-                json.dump(infer_results, f, ensure_ascii=False, indent=4)
-            print(f"✅ LLM 评估结果已保存至 {self.llm_judeg_results_file_path}")
-                          
+                infer_results = [
+                    {
+                        **r,
+                        # 'llm_judge':lj,
+                        # 'llm_type':lt,
+                        # 'llm_type_ori':lt_o,
+                        'llm_judge_result':fj,
+                        'llm_type_result':ft
+                    } for r, lj, lt, lt_o, fj, ft in zip(
+                        infer_results, 
+                        judeg_results, 
+                        type_results,
+                        llm_types,
+                        final_judge_results,
+                        final_type_results
+                    )
+                ]
+        
+                # 保存结果
+                with open(self.llm_judeg_results_file_path, 'w', encoding='utf-8') as f:
+                    json.dump(infer_results, f, ensure_ascii=False, indent=4)
+                print(f"✅ LLM 评估结果已保存至 {self.llm_judeg_results_file_path}")
+
+            if skip_llm:
+                # 已有llm评分结果
+                infer_results = self.load_json_file(self.llm_judeg_results_file_path)
+
+            count_dict = {k:[] for k in type_list}
+            valid_judge = 0
+            valid_category = 0
+            vqa_right_count = 0
+            for item in infer_results:
+                if item.get('llm_judge_result') in ['0', '1']:
+                    item['llm_judge_result'] = int(item['llm_judge_result'])
+                    valid_judge += 1
+                    vqa_right_count += item['llm_judge_result']
+
+                if item.get('llm_type_result') in type_list:
+                    count_dict[item.get('llm_type_result')].append(item.get('llm_judge_result'))
+                    valid_category += 1
+
+            eval_Indicator = {
+                'LLM分类有效率': valid_category / len(infer_results),
+                'LLM评分有效率': valid_judge / len(infer_results),
+                'vqa总准确率': vqa_right_count / valid_judge,
+                **{ t:sum(count_dict[t]) / len(count_dict[t]) for t in type_list}
+            }
+
+            for key, value in eval_Indicator.items(): 
+                print(f"{key}: {value}")
+           
     def parse_bbox_infer(self, bbox_str):
         # 匹配模式: 数字序列，可能包含小数点
         pattern = r'<box>\s*(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s*</box>'
@@ -290,9 +322,11 @@ class VRSBenchEval:
         
         # 如果匹配到单词且第一个是"Tag"，则返回第二个
         if matches and matches[0] == "Tag" and len(matches) > 1:
-            return matches[1]
+            Tag = matches[1]
         elif matches:
-            return matches[0]
+            Tag = matches[0]
+        if Tag in type_list:
+            return Tag
         return None
 
     def extract_majority(self, pred_list):
@@ -336,7 +370,7 @@ if __name__ == '__main__':
         data_path = VRSBenchs_path,
         model_file_path = model_file_path, 
         infer_results_path = infer_results_path, 
-        task = "vqa", # 任务类型：cap, referring, vqa
+        # task = "vqa", # 任务类型：cap, referring, vqa
         batch_size = 32  # cap_A100->64 referring_5880->32
         )
 

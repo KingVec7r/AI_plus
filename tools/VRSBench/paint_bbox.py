@@ -1,7 +1,11 @@
 import json
 import re
 import os
+import random
 from PIL import Image, ImageDraw
+
+data_base_dir = '/data/intelssd/jr/VRSBench'
+json_path = 'tools/VRSBench/eval_result/FM9G4B-V_VRSBench_referring_eval_result.json'
 
 def load_json_file(file_path):
     try:
@@ -28,7 +32,7 @@ def load_json_file(file_path):
         print(f"发生未知错误: {e}")
         return []
 
-json_path = 'tools/VRSBench/eval_result/FM9G4B-V_VRSBench_referring_eval_result.json'
+
 data = load_json_file(json_path)
 
 def parse_bbox_infer(bbox_str):
@@ -73,10 +77,11 @@ def parse_bbox_gt(bbox_str):
         
         return 2
     
-data_base_dir = '/data/jr/VRSBench'
 sava_path = 'tools/VRSBench/bbox_painting_result'
 gt_range = 100
 infer_range = 1000
+
+data = random.sample(data, 200)
 for item in data:
     bbox_gt = parse_bbox_gt(item.get("ground_truth"))
     bbox_infer = parse_bbox_infer(item.get("inference_result"))
