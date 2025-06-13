@@ -213,7 +213,7 @@ class VRSBenchEval:
             }
 
             for key, value in eval_Indicator.items(): 
-                print(f"{key}: {value}")
+                print(f"{key}: {value:.2%}")
            
     def parse_bbox_infer(self, bbox_str):
         # 匹配模式: 数字序列，可能包含小数点
