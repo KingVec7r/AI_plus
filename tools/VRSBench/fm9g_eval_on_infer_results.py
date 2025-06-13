@@ -1,28 +1,12 @@
-"""
-Name chat.py
-Date 2025/5/6 11:20
-Version 1.1 (Optimized for faster inference)
-TODO: 增加模型量化支持和更细粒度的性能监控
-"""
-
 import time
 import os
 import json
 import torch
-import torch.nn as nn
-import numpy as np
-from PIL import Image
+
 from contextlib import contextmanager
 from tqdm import tqdm
 from sacrebleu.metrics import BLEU
-from transformers import AutoModel, AutoTokenizer, TextStreamer
 
-import torch.distributed as dist
-from torch.nn.parallel import DistributedDataParallel as DDP
-from torch.utils.data import Dataset, DataLoader
-from torch.utils.data.distributed import DistributedSampler
-
-from torchvision import transforms
 from torchvision.ops import box_iou
 
 import sys
@@ -43,6 +27,7 @@ logger = logging.getLogger(__name__)
 # logger.warning('这是警告信息')
 # logger.error('这是错误信息')
 # logger.critical('这是严重错误信息')
+
 @contextmanager
 def suppress_output():
     with open(os.devnull, "w") as devnull:
@@ -75,19 +60,6 @@ def timing(description: str, enable: bool = True):
         # 格式化输出（保留前导零，例如 01:02:03.456）
         time_format = f"{hours:02d}:{minutes:02d}:{seconds:02d}.{milliseconds:03d}"
         print(f"\n{description}: {time_format}")
-
-class PromptDataset(Dataset):
-    def __init__(self, prompts):
-        self.data = prompts
-    
-    def __len__(self):
-        """返回数据集大小"""
-        return len(self.data)
-    
-    def __getitem__(self, idx):
-        """获取指定索引的样本"""
-        # 直接返回原始文本
-        return {"prompt": self.data[idx]}
         
 class VRSBenchEval:
     def __init__(self, data_path, model_file_path, infer_results_path, task="cap", batch_size=4):
@@ -97,18 +69,7 @@ class VRSBenchEval:
         self.llm_judge_results = []
         self.llm_type_results = []
 
-        if task == "vqa":
-            model_config = {
-                'trust_remote_code': True,
-                'attn_implementation': 'sdpa',
-                'torch_dtype': torch.bfloat16,
-            }
-
-            print(f"Loading model from {model_file_path}...")
-
-            with suppress_output():
-                self.model = AutoModel.from_pretrained(model_file_path, **model_config)
-                self.tokenizer = AutoTokenizer.from_pretrained(model_file_path, trust_remote_code=True)
+        self.judge_model_path = "/data/intelssd/jr/weights/Qwen/Qwen2.5-7B-Instruct"
 
         self.results_file_path = os.path.join(infer_results_path, f"{model_name}_VRSBench_{task}_eval_result.json")
 
@@ -117,9 +78,7 @@ class VRSBenchEval:
         self.world_size = torch.cuda.device_count()
         
         self.llm_judeg_results_file_path = os.path.join(infer_results_path, f"{model_name}_VRSBench_{task}_llm_judge_result.json")
-        
-
-    
+          
     def run(self):
         try:
             self.vrsbench_eval_ddp()
@@ -169,176 +128,60 @@ class VRSBenchEval:
             print(f"Acc@0.7: {iou_at_07:.2%}")
 
         elif self.task == "vqa": # vllm 大模型打分
-            infer_results = infer_results[:32]
+            
+            from vllm import LLM, SamplingParams
+            # infer_results = infer_results[:32]
 
             type_list = ['Category', 'Presence', 'Quantity', 'Color', 'Shape', 'Size','Position','Direction','Scene','Reasoning']
 
             question_list = [r['question'] for r in infer_results]
             ground_truth_list = [r['ground_truth'] for r in infer_results]
             inference_result_list = [r['inference_result'] for r in infer_results]
-            type_list = [r['type'] for r in infer_results]
+            
             # 生成提示词
-
-            prompts_for_judge = [f"""Question: {q}, Ground Truth Answer: {gt}, Predicted Answer: {pred}. Does the predicted answer match the ground truth? Answer 1 for match and 0 for not match. Use semantic meaning not exact match. Synonyms are also treated as a match, e.g., pond and swimming pool.""" for q, gt, pred in zip(
+            prompts_for_judge = [f"""Question: {q}, Ground Truth Answer: {gt}, Predicted Answer: {pred}. Does the predicted answer match the ground truth? Answer with 1 for match and 0 for no match. ONLY output 0 or 1 —no analysis, explanations, or extra text. Synonyms (e.g., "pond" and "swimming pool") count as matches.""" for q, gt, pred in zip(
                 question_list, ground_truth_list, inference_result_list
             )]
 
-            prompts_for_type = [f"""Question: {q}, Answer: {gt}. Select the most appropriate tag (a single word) for the question based on the content of this Q&A pair. Your response should be chosen from the candidate tags provided and should not include any extra content. Candidate tags: {str(type_list)}""" for q, gt in zip(
+            prompts_for_type = [f"""'Question: {q}, Answer: {gt}'. Select the most appropriate tag for the above QA pair. The tag should be chosen from the candidate list and should reflect the most prominent attribute or aspect that the Q&A focuses on. Your response should include only the tag word —no explanations, punctuation, or additional text. Candidate tags: {str(type_list)}""" for q, gt in zip(
                 question_list, ground_truth_list
             )]
             
             print('Generating llm judge results...')
+            prompts = prompts_for_judge + prompts_for_type
+            preds = self.llm_generate(prompts)
 
-            try:
-                torch.multiprocessing.spawn(
-                    self.judge_and_get_type_ddp,
-                    args=(prompts_for_judge, prompts_for_type),
-                    nprocs=self.world_size,
-                    # join=True
+            llm_judges = preds[:len(preds)//2]
+            llm_types = preds[len(preds)//2:]
+
+            judeg_results = [[self.extract_first_number(lj) for lj in lj_i] for lj_i in llm_judges]
+            type_results = [[self.extract_first_word(lt, type_list) for lt in lt_i] for lt_i in llm_types]
+
+            final_judge_results = self.extract_majority(judeg_results)
+            final_type_results = self.extract_majority(type_results)
+
+            infer_results = [
+                {
+                    **r,
+                    # 'llm_judge':lj,
+                    # 'llm_type':lt,
+                    # 'llm_type_ori':lt_o,
+                    'llm_judge_result':fj,
+                    'llm_type_result':ft
+                } for r, lj, lt, lt_o, fj, ft in zip(
+                    infer_results, 
+                    judeg_results, 
+                    type_results,
+                    llm_types,
+                    final_judge_results,
+                    final_type_results
                 )
-            except Exception as e:
-                print(f"evaluate failed: {e}")
-
-            for i, (output_j, output_t) in enumerate(zip(self.llm_judge_results, self.llm_type_results)):
-                infer_results[i]['judge_llm'] = output_j
-                infer_results[i]['type_llm'] = output_t
-            
+            ]
+      
             # 保存结果
             with open(self.llm_judeg_results_file_path, 'w', encoding='utf-8') as f:
                 json.dump(infer_results, f, ensure_ascii=False, indent=4)
             print(f"✅ LLM 评估结果已保存至 {self.llm_judeg_results_file_path}")
-
-    def judge_and_get_type_ddp(self, local_rank, prompts_j=None, prompts_t=None):
-
-        if not prompts_j or not prompts_t:
-            return None
-        
-        prompts_j_data = PromptDataset(prompts_j)
-        prompts_t_data = PromptDataset(prompts_t)
-
-        if local_rank == 0:
-            print("Start VRSBench evaluation with DDP...")
-
-        # 初始化进程组
-        torch.cuda.set_device(local_rank)
-        os.environ['WORLD_SIZE'] = str(self.world_size)
-        os.environ['RANK'] = str(local_rank)
-        os.environ['MASTER_ADDR'] = 'localhost'
-        os.environ['MASTER_PORT'] = '12355'
-        dist.init_process_group("nccl", world_size=self.world_size, init_method='env://')
-
-        if local_rank == 0:
-            print(f"Transfering model to DDP model...")
-        
-        model = self.model.cuda()
-        model = DDP(model, device_ids=[local_rank], output_device=local_rank)
-        model.eval()
-
-        sampler_j = DistributedSampler(prompts_j_data, num_replicas=self.world_size, rank=local_rank, shuffle=False)
-        sampler_t = DistributedSampler(prompts_t_data, num_replicas=self.world_size, rank=local_rank, shuffle=False)
-        dataloader_j = DataLoader(prompts_j_data, batch_size=self.batch_size, sampler=sampler_j, num_workers=2)
-        dataloader_t = DataLoader(prompts_t_data, batch_size=self.batch_size, sampler=sampler_t, num_workers=2)
-
-        image_ids = []
-        ground_truth = []
-        inference_results = []
-        questions = []
-        question_type = []
-
-        if local_rank == 0:
-            print(f"\nEvaluating {len(prompts_j_data)} results for the task of judge...")
-        
-        with timing(f"\nTotal inference time for judge", enable=(local_rank == 0)):
-            # 分批处理数据
-            # dist.barrier()
-            for i,batch in enumerate(tqdm(
-                dataloader_j, 
-                desc=f"[rank{local_rank}]", 
-                position = local_rank + 4,
-                # disable=local_rank != 0
-                )):  
-                if i%15==0:
-                    dist.barrier()             
-                    
-                prompt = batch['prompt']
-
-                batch_inputs = [[{'role': 'user', 'content': [p]}] for p in prompt]
-                
-                # 模型推理
-                max_new_tokens = 64
-                sampling = True
-
-                with suppress_output():
-                    with torch.no_grad():
-                        res = model.module.chat(
-                            image=None,
-                            msgs=batch_inputs,
-                            tokenizer=self.tokenizer,
-                            sampling=sampling,
-                            num_beams=1,
-                            max_new_tokens = max_new_tokens,
-                        )
-                
-                # 处理输出
-                inference_results.extend(res)
-        
-            # 收集所有进程的结果
-            all_results = [None for _ in range(self.world_size)]
-            dist.all_gather_object(all_results, {
-                'inference_results': inference_results,
-            })
-
-        if local_rank == 0:        
-            for result in all_results:
-                self.llm_judge_results.extend(result['inference_results'])
-
-            print(f"\nEvaluating {len(prompts_t_data)} results for the task of type...")
-        
-        with timing(f"\nTotal inference time for judge", enable=(local_rank == 0)):
-            # 分批处理数据
-            # dist.barrier()
-            for i,batch in enumerate(tqdm(
-                dataloader_t, 
-                desc=f"[rank{local_rank}]", 
-                position = local_rank + 4,
-                # disable=local_rank != 0
-                )):  
-                if i%15==0:
-                    dist.barrier()             
-                    
-                prompt = batch['prompt']
-
-                batch_inputs = [[{'role': 'user', 'content': [p]}] for p in prompt]
-                
-                # 模型推理
-                max_new_tokens = 64
-                sampling = True
-
-                with suppress_output():
-                    with torch.no_grad():
-                        res = model.module.chat(
-                            image=None,
-                            msgs=batch_inputs,
-                            tokenizer=self.tokenizer,
-                            sampling=sampling,
-                            num_beams=1,
-                            max_new_tokens = max_new_tokens,
-                        )
-                
-                # 处理输出
-                inference_results.extend(res)
-        
-            # 收集所有进程的结果
-            all_results = [None for _ in range(self.world_size)]
-            dist.all_gather_object(all_results, {
-                'inference_results': inference_results,
-            })
-
-        if local_rank == 0:        
-            for result in all_results:
-                self.llm_type_results.extend(result['inference_results'])
-
-        dist.destroy_process_group()
                           
     def parse_bbox_infer(self, bbox_str):
         # 匹配模式: 数字序列，可能包含小数点
@@ -406,6 +249,74 @@ class VRSBenchEval:
         except Exception as e:
             print(f"发生未知错误: {e}")
             return []
+        
+    def llm_generate(self, prompts):
+        from vllm import LLM, SamplingParams
+        sampling_params = SamplingParams(
+            temperature=0.45, 
+            top_p=0.9, 
+            max_tokens=64,
+            n=5
+            )
+        llm = LLM(
+            model=self.judge_model_path,
+            dtype='float16',
+            # gpu_memory_utilization=0.5,
+            tensor_parallel_size=torch.cuda.device_count())
+        outputs = llm.generate(prompts, sampling_params)
+        res_list = []
+        for output in outputs:
+            # n = 3
+            all_responses = [o.text.strip() for o in output.outputs]
+            res_list.append(all_responses)
+            #  n = 1
+            # response_text = output.outputs[0].text.strip()
+            # res_list.append(response_text)        
+        return res_list
+    
+    def extract_first_number(self, text):
+        """提取字符串中的第一个数字"""
+        pattern = r'\d+'  # 匹配一个或多个数字
+        match = re.search(pattern, text)
+        if match:
+            return match.group()
+        return None
+
+    def extract_first_word(self, text, type_list):
+        """提取字符串中的第一个单词"""
+        # pattern = r'(?:Tag:)?\s*([A-Z][a-z]*)'  # 匹配一个或多个字母组成的单词
+        pattern = r'[A-Z][a-z]+'
+        matches = re.findall(pattern, text)
+        
+        # 如果匹配到单词且第一个是"Tag"，则返回第二个
+        if matches and matches[0] == "Tag" and len(matches) > 1:
+            return matches[1]
+        elif matches:
+            return matches[0]
+        return None
+
+    def extract_majority(self, pred_list):
+        """从每个子列表中提取出现至少两次的元素，如果没有则返回None"""
+        result = []
+        
+        for sublist in pred_list:
+            # 统计每个元素出现的次数
+            count_dict = {}
+            for element in sublist:
+                count_dict[element] = count_dict.get(element, 0) + 1
+            
+            # 查找出现至少两次的元素
+            majority_element = None
+            max_count = 0
+            
+            for element, count in count_dict.items():
+                if count > max_count:
+                    max_count = count
+                    majority_element = element
+
+            result.append(majority_element)
+        
+        return result
 
 if __name__ == '__main__':
     # 模型文件路径
@@ -426,7 +337,7 @@ if __name__ == '__main__':
         model_file_path = model_file_path, 
         infer_results_path = infer_results_path, 
         task = "vqa", # 任务类型：cap, referring, vqa
-        batch_size = 16  # cap_A100->64 referring_5880->32
+        batch_size = 32  # cap_A100->64 referring_5880->32
         )
 
     eval.run()
